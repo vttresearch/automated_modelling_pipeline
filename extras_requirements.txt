@@ -1,0 +1,33 @@
+# Extras
+[tensorflow]
+tensorflow>=2.16.1
+
+[darts]
+darts>=0.25.0
+
+[mlflow]
+mlflow>=3.1.0
+mlflow_skinny>=3.1.0
+
+[fastapi]
+fastapi>=0.115.12
+simplejson>=3.20.1
+uvicorn>=0.34.3
+starlette>=0.46.2
+
+[jupyter]
+notebook>=7.2.2
+ipykernel>=6.29.5
+
+[streamlit]
+streamlit>=1.32.0
+plotly>=5.18.0
+
+[timesfm]
+timesfm @ git+https://github.com/google-research/timesfm.git@bf88c5dc88f6275b7071ebcd9051406c11435c0c#egg=timesfm
+jax>=0.8.0
+jaxlib>=0.8.0
+torchaudio>=2.9.1
+torchvision>=0.24.1
+opt_einsum>=3.4.0
+hf-xet>=1.2.0

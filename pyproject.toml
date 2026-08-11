@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 88
+exclude = ["tests/*"] # Decide which should be ignored
+
+[tool.ruff.lint]
+ignore = ["E203", "E731", "E722"] # decide what could be ignored

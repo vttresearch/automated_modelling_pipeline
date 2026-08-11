@@ -1,0 +1,11 @@
+pyyaml>=6.0.2
+numpy>=2.2.0
+pandas>=2.3.2
+scikit-learn>=1.6.3
+matplotlib>=3.9.5
+tqdm>=4.67.1
+lightgbm>=4.6.0
+scikeras>=0.13.0
+holidays>=0.80
+pytest>=8.4.2
+

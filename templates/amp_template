@@ -1,0 +1,130 @@
+"""
+${NAME}
+Author: ${USER}
+Date: ${DATE}
+"""
+
+import pandas as pd
+import pathlib
+from amp.tools import train_eval_tool
+from amp.baselines import MeanBaseline, LagBaseline
+from amp.utils import param_select
+from amp.preprocessing import basic_features
+
+
+def load_data():
+    """
+    Loads the data from a CSV file.
+
+    Returns:
+        pd.DataFrame: The loaded data with timestamp as index and parse_dates=True.
+    """
+    filepath = pathlib.Path('data/files/${DATA_CSV}')
+    return pd.read_csv(filepath, index_col='timestamp', parse_dates=True)
+
+
+
+def define_forecasters(outputs, data_freq, forecast_len, lead_time, update_freq):
+    """
+    Defines basic features that are used in several models and various forecasters for different models.
+
+    Args:
+        outputs (list): The output variables to be predicted.
+        data_freq (int): The frequency of the data in minutes.
+        forecast_len (int): The length of the forecast period.
+        lead_time (int): The lead time for the prediction.
+        update_freq (int): The update frequency for the model.
+
+    Returns:
+        dict: A dictionary containing the defined forecasters.
+    """
+    # Define basic features that are used in several models.
+
+    features = {}
+    """
+    Basic features-method provides dictionary for commonly used features e.g. lagget_target, weekday
+    features = basic_features(lead_time=lead_time,
+                              forecast_len=forecast_len,
+                              features=['lagged_target', 'weekday', 'hour', 't_out', 'holiday'])
+    """
+    """
+    Example numeric type feature, feature1 name should be found from training data
+    feature1 = {'windows': [(lead_time, lead_time + forecast_len - 1)],
+                               'type': 'numeric'}
+
+    features['feature1'] = feature1
+    """
+
+
+    forecasters = {}
+    other = {'${FORECASTER_NAME}': ${FORECASTER_TYPE}(outputs,
+                                          lead_time,
+                                          forecast_len,
+                                          data_freq,
+                                          features=features,
+                                          update_freq=update_freq,
+                                          verbose=3)
+             }
+    forecasters.update(other)
+    return forecasters
+
+
+def define_targets():
+    """
+    Defines the target variables to be predicted.
+
+
+    Returns:
+        list: A list of dictionaries containing the target variable information.
+        column key helps the script select column for the correct historical data for training
+        output key defines what the model will predict and how the predictions are referenced.
+        plot_label is a descriptive name used when visualizing the results (e.g., in plots or graphs).
+
+The value of _plot_label_ is a descriptive name used when visualizing the results (e.g., in plots or graphs).
+    """
+    ${TARGET_NAME}_target = {'column': '${TARGET_NAME}',
+                 'output': '${TARGET_NAME}',
+                 'plot_label': '${TARGET_NAME}_measured'}
+
+    return [${TARGET_NAME}_target]
+
+
+if __name__ == '__main__':
+
+    targets = define_targets()
+    data_freq =  ${DATA_FREQ} # Data freq in minutes
+    forecast_len = ${FORECAST_LENGHT}  # Forecast length
+    lead_time = ${LEAD_TIME} # Lead time of the forecast
+    update_freq = ${UPDATE_FREQ} # How often forecast is updated relatively to data, use 1 normally
+    test_period_start = '${TEST_PERIOD_START}'
+    test_period_end = '${TEST_PERIOD_END}'
+
+    outputs = [target['output'] for target in targets]
+    # Remove duplicates
+    outputs = list(set(outputs))
+
+    all_models = define_forecasters(outputs,
+                                    data_freq,
+                                    forecast_len,
+                                    lead_time,
+                                    update_freq)
+
+    mode, models, plot, verbose = param_select(all_models)
+    df = load_data()
+    test_period = (test_period_start, test_period_end)
+    baselines = {'mean': MeanBaseline(),
+                 'lag_4': LagBaseline(4),
+                 'lag_24': LagBaseline(24)}
+    train_eval_tool(mode,
+                    targets,
+                    models,
+                    df,
+                    test_period,
+                    data_freq,
+                    forecast_len,
+                    lead_time,
+                    update_freq,
+                    baselines,
+                    plot,
+                    verbose,
+                    'trained_models')
