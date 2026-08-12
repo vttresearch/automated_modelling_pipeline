@@ -1,12 +1,15 @@
-"""
-AMP-compatible TimesFM forecaster that loads a LoRA-fine-tuned adapter.
+"""AMP TimesFM forecaster backed by LoRA-fine-tuned weights, with covariate support.
 
-Subclasses the interface of ``TimesFMForecaster`` from the AMP library, using
-the Transformers-based ``TimesFm2_5ModelForPrediction`` + PEFT LoRA adapter
-instead of the native ``timesfm`` checkpoint.
+``TimesFMLoRAForecaster`` subclasses :class:`~amp.timesfm.forecaster.TimesFMForecaster`
+and overrides only model loading. A LoRA adapter (trained on the Transformers
+variant of TimesFM 2.5) is converted into the *native* checkpoint layout via
+:mod:`amp.timesfm.lora_convert`, then loaded into the native ``timesfm`` model.
 
-The ``predict()`` method uses the Transformers inference API, which differs
-slightly from the native ``timesfm`` package.
+Because the native model is used for inference, the forecaster inherits the full
+covariate pipeline of the base forecaster — including ``forecast_with_covariates``
+(XReg) for weather / flex-event covariates — verbatim. This guarantees an
+apples-to-apples comparison with base TimesFM: identical inference logic, the only
+difference being the LoRA-fine-tuned backbone.
 
 Model name convention in configs: ``timesfm_lora_ctx_{N}`` / ``timesfm_lora_ctx_{N}_control``
 """
@@ -14,41 +17,30 @@ Model name convention in configs: ``timesfm_lora_ctx_{N}`` / ``timesfm_lora_ctx_
 from __future__ import annotations
 
 import os
-import time
 
-import numpy as np
-import pandas as pd
-from numpy.lib.stride_tricks import sliding_window_view
+from amp.timesfm.forecaster import TimesFMForecaster
+from amp.timesfm.lora_convert import (
+    NATIVE_MODEL,
+    load_native_finetuned_state_dict,
+)
 
-BATCH_SIZE = 32  # smaller than base TimesFM due to Transformers overhead
 
+class TimesFMLoRAForecaster(TimesFMForecaster):
+    """TimesFM forecaster that loads LoRA-fine-tuned weights with covariate support.
 
-class TimesFMLoRAForecaster:
-    """
-    TimesFM 2.5 forecaster that loads a pre-trained LoRA adapter.
-
-    Identical public interface to ``TimesFMForecaster``:
-        - ``fit(df)``           — no-op (base model is pre-trained, adapter is pre-loaded)
-        - ``predict(input_df)`` — sliding-window forecast
-        - ``save(filepath)``    — saves metadata only
-        - ``load(filepath)``    — class method, reconstructs and loads adapter
+    Identical public interface and inference behaviour to ``TimesFMForecaster``;
+    only the model weights differ (base backbone replaced by the LoRA-fine-tuned
+    one). Covariates declared in ``features`` are handled exactly as in the base
+    forecaster (XReg residual model).
 
     Parameters
     ----------
-    targets : list[Target]
-        AMP Target objects (same format as TimesFMForecaster).
-    lead_time : int
-        Forecast lead time in steps.
-    forecast_len : int
-        Forecast horizon in steps.
-    data_freq : int
-        Data frequency in minutes.
-    features : dict
-        Feature config dict (same format as TimesFMForecaster).
-    update_freq : int
-        Update frequency (unused, kept for interface compatibility).
+    targets, lead_time, forecast_len, data_freq, features, update_freq
+        Same as :class:`~amp.timesfm.forecaster.TimesFMForecaster`.
     adapter_dir : str
-        Path to the saved LoRA adapter directory (required).
+        Path to the saved LoRA adapter directory (required). If a cached
+        ``native_finetuned.safetensors`` is present it is loaded directly;
+        otherwise the native weights are built on the fly from the PEFT adapter.
     """
 
     def __init__(
@@ -66,38 +58,31 @@ class TimesFMLoRAForecaster:
                 "adapter_dir is required for TimesFMLoRAForecaster. "
                 "Pass the path to the directory containing the LoRA adapter weights."
             )
-        self.targets = targets
-        self.lead_time = lead_time
-        self.horizon = forecast_len
-        self.data_freq = data_freq
-        self._features = features or {}
-        self.context_len = abs(features["lagged_target"]["windows"][0][0])
-        self.forecast_len = self.horizon
-        self.update_rate = update_freq
+        super().__init__(
+            targets=targets,
+            lead_time=lead_time,
+            forecast_len=forecast_len,
+            data_freq=data_freq,
+            features=features,
+            update_freq=update_freq,
+        )
         self.adapter_dir = adapter_dir
-        self._model = None  # lazy-loaded
-
-    # ------------------------------------------------------------------
-    # Properties (mirror TimesFMForecaster interface)
-    # ------------------------------------------------------------------
-
-    @property
-    def input_window(self):
-        return -self.context_len, self.horizon
-
-    @property
-    def outputs(self):
-        return [t.output for t in self.targets]
-
-    # ------------------------------------------------------------------
-    # Model loading
-    # ------------------------------------------------------------------
 
     def _load_model(self):
-        """Load the Transformers TimesFM model with LoRA adapter applied."""
-        import torch
-        from transformers import TimesFm2_5ModelForPrediction
-        from peft import PeftModel
+        """Load the native TimesFM model and apply LoRA-fine-tuned weights.
+
+        Mirrors ``TimesFMForecaster._load_model`` (same ``ForecastConfig``) but
+        replaces the attention projections with the fine-tuned ones before
+        compiling, so the covariate inference path is reused unchanged.
+        """
+        self.model_name = NATIVE_MODEL
+        try:
+            import timesfm
+            import torch
+        except ImportError:
+            import warnings
+            warnings.warn("TimesFM not installed. Please install timesfm.")
+            raise
 
         torch.set_float32_matmul_precision("high")
         os.environ["OMP_NUM_THREADS"] = "1"
@@ -109,131 +94,44 @@ class TimesFMLoRAForecaster:
                 "Ensure the adapter has been trained and saved before running inference."
             )
 
-        print(f"Loading base TimesFM model (transformers) …")
-        base = TimesFm2_5ModelForPrediction.from_pretrained(
-            "google/timesfm-2.5-200m-transformers"
+        self.model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(self.model_name)
+
+        print(f"Applying LoRA-fine-tuned weights from: {self.adapter_dir}")
+        native_sd = load_native_finetuned_state_dict(self.adapter_dir)
+        missing, unexpected = self.model.model.load_state_dict(native_sd, strict=False)
+        if unexpected:
+            raise RuntimeError(
+                f"Unexpected keys when loading fine-tuned weights: {unexpected[:5]} …"
+            )
+        if missing:
+            # All native keys should be present; warn rather than fail in case the
+            # cached export omitted unchanged buffers.
+            import warnings
+            warnings.warn(
+                f"{len(missing)} native keys not provided by fine-tuned weights "
+                f"(kept base values), e.g. {missing[:3]}"
+            )
+
+        print(
+            f"Loaded LoRA-fine-tuned TimesFM ({self.model_name}) with context "
+            f"length {self.context_len} and horizon {self.horizon}"
+        )
+        self.model.compile(
+            timesfm.ForecastConfig(
+                max_context=self.context_len,
+                max_horizon=self.horizon,
+                normalize_inputs=True,
+                use_continuous_quantile_head=True,
+                force_flip_invariance=True,
+                infer_is_positive=True,
+                fix_quantile_crossing=True,
+                return_backcast=True,
+            )
         )
 
-        print(f"Loading LoRA adapter from: {self.adapter_dir}")
-        self._model = PeftModel.from_pretrained(base, self.adapter_dir)
-        self._model.eval()
-
-        # Merge LoRA weights into base for faster inference
-        self._model = self._model.merge_and_unload()
-        print(f"LoRA adapter merged. Model ready.")
-
-    def _ensure_model(self):
-        if self._model is None:
-            self._load_model()
-
     # ------------------------------------------------------------------
-    # Inference
+    # Save / Load (AMP interface) — persist the adapter directory.
     # ------------------------------------------------------------------
-
-    def predict(self, input_df: pd.DataFrame, output_mode: str = "target") -> dict:
-        """
-        Generate sliding-window forecasts using the LoRA-fine-tuned TimesFM.
-
-        Parameters
-        ----------
-        input_df : pd.DataFrame
-            Input dataframe with target columns.
-        output_mode : str
-            ``"target"`` — multi-step forecast matrix per target.
-            ``"single"`` — single forecast value per timestamp.
-
-        Returns
-        -------
-        dict[str, pd.DataFrame]
-        """
-        import torch
-
-        self._ensure_model()
-        device = next(self._model.parameters()).device
-
-        input_df = input_df.copy()
-        if input_df.index.freq is None:
-            input_df = input_df.asfreq(f"{self.data_freq}min", method="ffill")
-
-        # Fill NaNs in all used columns
-        all_cols = [t.output for t in self.targets]
-        for col in all_cols:
-            if col in input_df.columns and input_df[col].isna().any():
-                input_df[col] = input_df[col].ffill().bfill()
-
-        results = {}
-
-        for target_cfg in self.targets:
-            output = target_cfg.output
-            series = input_df[output].values.astype(np.float32)
-
-            # Build all context windows at once
-            all_windows = sliding_window_view(series, window_shape=self.context_len)
-            num_windows = all_windows.shape[0]
-
-            if num_windows <= 0:
-                raise ValueError(f"Not enough data for context length {self.context_len}.")
-
-            all_forecasts = []
-            inference_start = time.perf_counter()
-
-            for i in range(0, num_windows, BATCH_SIZE):
-                batch = all_windows[i : i + BATCH_SIZE]  # (B, context)
-                batch_tensors = [
-                    torch.from_numpy(batch[j]).to(device) for j in range(len(batch))
-                ]
-
-                with torch.no_grad():
-                    out = self._model(
-                        past_values=batch_tensors,
-                        forecast_context_len=self.context_len,
-                    )
-
-                # point_forecasts: (batch, max_horizon) — slice to self.horizon
-                preds = out.point_forecasts.cpu().numpy()[:, : self.horizon]
-                all_forecasts.append(preds)
-
-            inference_done = time.perf_counter()
-            print(
-                f"Model (LoRA) Inference time: {inference_done - inference_start:.2f}s "
-                f"for target '{output}' with {num_windows} windows"
-            )
-
-            forecasts = np.concatenate(all_forecasts, axis=0)  # (num_windows, horizon)
-
-            # Build output DataFrame (same structure as TimesFMForecaster)
-            start_time = input_df.index[self.context_len - 1] + pd.Timedelta(
-                minutes=self.data_freq
-            )
-            index = pd.date_range(
-                start=start_time, periods=num_windows + self.horizon, freq=f"{self.data_freq}min"
-            )
-            columns = [
-                f"forecast_{i}" for i in range(self.lead_time, self.lead_time + self.horizon)
-            ]
-            ftime_df = pd.DataFrame(index=index, columns=columns, dtype=float)
-
-            for h in range(self.horizon):
-                col_name = columns[h]
-                start_idx = h + self.lead_time
-                val_len = min(len(ftime_df) - start_idx, forecasts.shape[0])
-                ftime_df.iloc[start_idx : start_idx + val_len, h] = forecasts[:val_len, h]
-
-            if output_mode == "target":
-                results[output] = ftime_df
-            elif output_mode == "single":
-                results[output] = pd.DataFrame({"forecast": ftime_df.max(axis=1)})
-            else:
-                raise ValueError(f"Invalid output_mode: {output_mode}")
-
-        return results
-
-    # ------------------------------------------------------------------
-    # Fit / Save / Load (AMP interface)
-    # ------------------------------------------------------------------
-
-    def fit(self, df):
-        print("TimesFMLoRAForecaster does not require fitting — adapter is pre-loaded.")
 
     def save(self, filepath):
         import joblib
@@ -264,5 +162,7 @@ class TimesFMLoRAForecaster:
             features=state["features"],
             adapter_dir=state.get("adapter_dir"),
         )
-        obj._load_model()
+        # Model loading is lazy — _load_model() is called on first predict()
+        # (inherited from TimesFMForecaster). This avoids requiring the adapter
+        # directory / weights to exist at load time.
         return obj

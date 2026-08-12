@@ -838,16 +838,6 @@ timestamp,ele,dh,temp_out
 ...
 ```
 
-## Data flow in AMP
-When training and evaluaiting a model in AMP, you will use the train_eval_tool. The tool takes in a dataframe and passes it to the model in fit() and predict() calls. Data pre-processing is performed in:
-1. EFP provides automatic feature processing
-2. Data processing can be customized with a custom model inheriting the BaseModel class
-
-### AMP DataLoader
-The dataloader is used as a loading and preprocessing tool data in train_eval_tool. By default, given a path to a csv / multiple csv:s, it loads the data and splits it into samples according to the defined properties filtering missing values and dates outside of determined range. The dataloader enables custom models to be included in the validation pipeline.
-
-In order to use the dataloader in train_eval_tool, the model needs to implement a method: **get_fit_data()**. This method takes a single argument, the dataloader, and uses it to format the data into model specific format. For evaluation, the BaseModel already has a method, **get_evaluation_dataframes()** that provides the data with model specific properties.
-
 ## Examples 
 
 AMP contains example projects that can be used as a reference when starting new project. Examples can be found from _examples_ directory
@@ -913,18 +903,4 @@ Create the following structure for your project:
 Start by adapting the example scripts in the `examples/hoas` directory for your dataset and use case, or check the [Quickstart Forecasting Example](#quickstart-forecasting-example).
 
 ## License
-
-AMP is distributed under the **AMP Non-Commercial License Agreement** — see
-[`LICENSE`](LICENSE) for the full text. In short:
-
-- Free to use, modify, and study for **non-commercial, non-profit research**
-  (e.g. universities, government labs, not-for-profit research institutes).
-- For-profit entities may use the Software only for internal **evaluation
-  purposes for up to 30 days**, after which all copies must be destroyed.
-- **Redistribution of the Software, modifications, or derivative works is
-  not permitted** under this license.
-- Any commercial use (including fee-based service projects) requires a
-  separate commercial licensing agreement with VTT — contact
-  [ip.agreements@vtt.fi](mailto:ip.agreements@vtt.fi).
-- The Software is provided "AS IS", without warranty of any kind.
-
+See LICENCE file
