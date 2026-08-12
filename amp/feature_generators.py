@@ -29,7 +29,6 @@ Example
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Union, Tuple
-from attr import dataclass
 import pandas
 import numpy
 import datetime
